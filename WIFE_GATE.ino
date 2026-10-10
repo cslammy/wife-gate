@@ -1,11 +1,14 @@
 /*
- * WIFE GATE  v0.2
+ * WIFE GATE  v0.3
  * MCU:   ATtiny1616
  * Core:  megaTinyCore (Spence Konde)
  *
  * Behavior:
  *   - Rising edge on PA3 (TRIG_IN) starts one HIGH pulse on PB1 (GATE_OUT).
  *   - Pulse length is set by the pot on PA4: 0 -> 10 ms, 1023 -> 5000 ms, linear between.
+ *   - At trigger time, PA5 (RANDOM_ADD) is read with analogRead(). A random
+ *     value from 0 up to and including that reading is picked, multiplied
+ *     by 2, and added to the pulse length as extra milliseconds.
  *   - Rising edges that arrive while GATE_OUT is HIGH are ignored.
  *   - Debounce: after an accepted edge, TRIG_IN must stay LOW for
  *     REARM_LOW_MS before another rising edge is accepted.
@@ -20,6 +23,7 @@
 #define GATE_OUT    PIN_PB1
 #define TRIG_IN     PIN_PA3
 #define LENGTH_POT  PIN_PA4
+#define RANDOM_ADD  PIN_PA5
 
 // ---------- Settings ----------
 const uint32_t MIN_MS        = 10;     // pulse length at pot fully CCW
@@ -73,6 +77,8 @@ void setup() {
   // Seed the average with a real reading so the first pulse is correct
   potAccum = (uint32_t)analogRead(LENGTH_POT) << SMOOTH_SHIFT;
 
+  randomSeed(micros());
+
   attachInterrupt(digitalPinToInterrupt(TRIG_IN), onTrigger, RISING);
 }
 
@@ -104,9 +110,13 @@ void loop() {
   // Start a pulse on a pending trigger
   if (triggerPending) {
     triggerPending = false;
-    gateLengthMs   = potToMs(smoothedPot());
-    gateStartMs    = now;
-    gateHigh       = true;
+
+    uint16_t randomAddRaw = analogRead(RANDOM_ADD);          // 0..1023
+    uint16_t randomAdd    = random(0, (long)randomAddRaw + 1); // 0..randomAddRaw
+
+    gateLengthMs = potToMs(smoothedPot()) + (uint32_t)randomAdd * 2;
+    gateStartMs  = now;
+    gateHigh     = true;
     digitalWriteFast(GATE_OUT, HIGH);
   }
 

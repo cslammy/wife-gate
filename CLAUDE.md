@@ -16,11 +16,16 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
 | GATE_OUT   | PB1 | Gate output, HIGH = 5 V                     |
 | TRIG_IN    | PA3 | Trigger input, rising edge, via interrupt   |
 | LENGTH_POT | PA4 | Pot, analogRead 0..1023 sets gate length    |
+| RANDOM_ADD | PA5 | analogRead 0..1023 sets max random add-on   |
 
-## Current behavior (v0.2, tested and working on hardware)
+## Current behavior (v0.3, pending hardware test)
 - Rising edge on TRIG_IN starts one HIGH pulse on GATE_OUT.
 - Pulse length: linear map, pot 0 -> 10 ms, pot 1023 -> 5000 ms.
-- Pulse length is latched at trigger time.
+- At trigger time, RANDOM_ADD is read with analogRead(). A random value from
+  0 up to and including that reading is chosen, multiplied by 2, and added
+  to the pulse length as extra milliseconds (e.g. reading of 122 -> up to
+  244 extra ms).
+- Pulse length (including the random add-on) is latched at trigger time.
 - Edges arriving while GATE_OUT is HIGH are ignored.
 - Pot is smoothed with an EMA (accumulator form, `SMOOTH_SHIFT` = 4, sampled every 2 ms).
 - Debounce: an accepted edge disarms the input; it re-arms only after TRIG_IN
