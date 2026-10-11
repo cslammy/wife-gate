@@ -13,13 +13,14 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
 ## Pins
 | Name       | Pin | Function                                   |
 |------------|-----|--------------------------------------------|
-| GATE_OUT   | PB1 | Gate output, HIGH = 5 V                     |
-| TRIG_IN    | PA3 | Trigger input, rising edge, via interrupt   |
-| LENGTH_POT | PA4 | Pot, analogRead 0..1023 sets gate length    |
-| RANDOM_ADD | PA5 | analogRead 0..1023 sets max random add-on   |
-| EOC_OUT    | PB2 | End-of-cycle output, fixed 200 ms HIGH pulse|
+| GATE_OUT     | PB1 | Gate output, HIGH = 5 V                          |
+| TRIG_IN      | PA3 | Trigger input, rising edge, via interrupt        |
+| LENGTH_POT   | PA4 | Pot, analogRead 0..1023 sets gate length         |
+| RANDOM_ADD   | PA5 | analogRead 0..1023 sets max random add-on        |
+| EOC_OUT      | PB2 | End-of-cycle output, fixed 200 ms HIGH pulse     |
+| ALT_MODE_SW  | PB4 | Switch to GND, INPUT_PULLUP. LOW = alt mode      |
 
-## Current behavior (v0.4, pending hardware test)
+## Current behavior (v0.6, pending hardware test)
 - Rising edge on TRIG_IN starts one HIGH pulse on GATE_OUT.
 - Pulse length: linear map, pot 0 -> 10 ms, pot 1023 -> 5000 ms.
 - At trigger time, RANDOM_ADD is read with analogRead(). A random value from
@@ -27,10 +28,20 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
   to the pulse length as extra milliseconds (e.g. reading of 122 -> up to
   244 extra ms).
 - Pulse length (including the random add-on) is latched at trigger time.
-- When GATE_OUT falls back to LOW, EOC_OUT fires a fixed 200 ms HIGH pulse
+- When a cycle's timer finishes, EOC_OUT fires a fixed 200 ms HIGH pulse
   ("end of cycle"). This is non-blocking and runs independently of the
-  trigger/gate logic.
-- Edges arriving while GATE_OUT is HIGH are ignored.
+  trigger/gate logic, and always fires at the end of every cycle -- including
+  alt mode's silent (LOW) beats, not just HIGH pulses.
+- ALT_MODE_SW normally reads HIGH (internal pull-up) and operation is as
+  above. When grounded (alt mode):
+  - Edges are never ignored while GATE_OUT is HIGH -- every rising edge
+    immediately restarts a new cycle (duration recomputed fresh each time,
+    same pot + random*2 math), canceling whatever cycle was in progress.
+  - GATE_OUT alternates each edge: odd edges (1st, 3rd, ...) produce a
+    normal HIGH pulse for the new duration; even edges (2nd, 4th, ...)
+    hold GATE_OUT LOW for that same duration (a silent/skipped beat).
+  - The REARM_LOW_MS debounce still applies in both modes.
+- Edges arriving while GATE_OUT is HIGH are ignored (normal mode only).
 - Pot is smoothed with an EMA (accumulator form, `SMOOTH_SHIFT` = 4, sampled every 2 ms).
 - Debounce: an accepted edge disarms the input; it re-arms only after TRIG_IN
   has been continuously LOW for `REARM_LOW_MS` (5 ms). Fixed double-triggering

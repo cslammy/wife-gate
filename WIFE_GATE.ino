@@ -1,5 +1,5 @@
 /*
- * WIFE GATE  v0.4
+ * WIFE GATE  v0.6
  * MCU:   ATtiny1616
  * Core:  megaTinyCore (Spence Konde)
  *
@@ -9,11 +9,17 @@
  *   - At trigger time, PA5 (RANDOM_ADD) is read with analogRead(). A random
  *     value from 0 up to and including that reading is picked, multiplied
  *     by 2, and added to the pulse length as extra milliseconds.
- *   - When GATE_OUT falls back to LOW, PB2 (EOC_OUT) fires a fixed 200 ms
- *     HIGH pulse ("end of cycle").
- *   - Rising edges that arrive while GATE_OUT is HIGH are ignored.
+ *   - When a cycle's timer finishes, PB2 (EOC_OUT) fires a fixed 200 ms
+ *     HIGH pulse ("end of cycle"). This always fires at the end of every
+ *     cycle, including alt mode's silent (LOW) beats -- not just HIGH pulses.
+ *   - Rising edges that arrive while GATE_OUT is HIGH are ignored, UNLESS
+ *     PB4 (ALT_MODE_SW) is grounded (alt mode). In alt mode, every rising
+ *     edge immediately restarts a new cycle (same duration math), and
+ *     GATE_OUT alternates: odd edges produce a normal HIGH pulse, even
+ *     edges stay LOW for that same duration (a skipped/silent beat).
  *   - Debounce: after an accepted edge, TRIG_IN must stay LOW for
- *     REARM_LOW_MS before another rising edge is accepted.
+ *     REARM_LOW_MS before another rising edge is accepted (applies in
+ *     both modes).
  *   - Pot reading is smoothed with an exponential moving average.
  *   - Pulse length is latched when the pulse starts, so turning the pot
  *     mid-pulse does not change the pulse already in progress.
@@ -22,11 +28,12 @@
  */
 
 // ---------- Pins ----------
-#define GATE_OUT    PIN_PB1
-#define TRIG_IN     PIN_PA3
-#define LENGTH_POT  PIN_PA4
-#define RANDOM_ADD  PIN_PA5
-#define EOC_OUT     PIN_PB2
+#define GATE_OUT     PIN_PB1
+#define TRIG_IN      PIN_PA3
+#define LENGTH_POT   PIN_PA4
+#define RANDOM_ADD   PIN_PA5
+#define EOC_OUT      PIN_PB2
+#define ALT_MODE_SW  PIN_PB4
 
 // ---------- Settings ----------
 const uint32_t MIN_MS        = 10;     // pulse length at pot fully CCW
@@ -52,9 +59,14 @@ uint32_t gateLengthMs = MIN_MS;
 bool     eocHigh      = false;         // true while EOC_OUT is HIGH
 uint32_t eocStartMs   = 0;
 
+bool     altPulseOn   = false;         // alternates each edge while in alt mode
+bool     cycleActive  = false;         // true while a cycle's timer is running (HIGH pulse or silent beat)
+
 // ---------- ISR ----------
 void onTrigger() {
-  if (armed && !gateHigh) {            // ignore bounce and edges while the gate is HIGH
+  bool altMode = (digitalReadFast(ALT_MODE_SW) == LOW);
+  // ignore bounce always; ignore edges while the gate is HIGH unless alt mode is active
+  if (armed && (altMode || !gateHigh)) {
     armed          = false;
     triggerPending = true;
   }
@@ -83,6 +95,7 @@ void setup() {
   digitalWriteFast(EOC_OUT, LOW);
 
   pinMode(TRIG_IN, INPUT);
+  pinMode(ALT_MODE_SW, INPUT_PULLUP);
 
   // Seed the average with a real reading so the first pulse is correct
   potAccum = (uint32_t)analogRead(LENGTH_POT) << SMOOTH_SHIFT;
@@ -126,15 +139,27 @@ void loop() {
 
     gateLengthMs = potToMs(smoothedPot()) + (uint32_t)randomAdd * 2;
     gateStartMs  = now;
-    gateHigh     = true;
-    digitalWriteFast(GATE_OUT, HIGH);
+    cycleActive  = true;
+
+    if (digitalReadFast(ALT_MODE_SW) == LOW) {
+      // Alt mode: every edge restarts the cycle immediately, alternating
+      // between a HIGH pulse and a silent (LOW) beat of the same duration.
+      altPulseOn = !altPulseOn;
+      gateHigh   = altPulseOn;
+      digitalWriteFast(GATE_OUT, altPulseOn ? HIGH : LOW);
+    } else {
+      gateHigh = true;
+      digitalWriteFast(GATE_OUT, HIGH);
+    }
   }
 
-  // End the pulse when its time is up
-  if (gateHigh && (millis() - gateStartMs >= gateLengthMs)) {
+  // End the cycle when its time is up -- always fires EOC_OUT, whether this
+  // cycle drove GATE_OUT HIGH or (alt mode's silent beats) left it LOW.
+  if (cycleActive && (millis() - gateStartMs >= gateLengthMs)) {
     digitalWriteFast(GATE_OUT, LOW);
     triggerPending = false;            // discard anything that slipped in
     gateHigh       = false;
+    cycleActive    = false;
 
     eocStartMs = now;
     eocHigh    = true;
