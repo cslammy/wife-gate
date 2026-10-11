@@ -1,5 +1,5 @@
 /*
- * WIFE GATE  v0.3
+ * WIFE GATE  v0.4
  * MCU:   ATtiny1616
  * Core:  megaTinyCore (Spence Konde)
  *
@@ -9,6 +9,8 @@
  *   - At trigger time, PA5 (RANDOM_ADD) is read with analogRead(). A random
  *     value from 0 up to and including that reading is picked, multiplied
  *     by 2, and added to the pulse length as extra milliseconds.
+ *   - When GATE_OUT falls back to LOW, PB2 (EOC_OUT) fires a fixed 200 ms
+ *     HIGH pulse ("end of cycle").
  *   - Rising edges that arrive while GATE_OUT is HIGH are ignored.
  *   - Debounce: after an accepted edge, TRIG_IN must stay LOW for
  *     REARM_LOW_MS before another rising edge is accepted.
@@ -24,6 +26,7 @@
 #define TRIG_IN     PIN_PA3
 #define LENGTH_POT  PIN_PA4
 #define RANDOM_ADD  PIN_PA5
+#define EOC_OUT     PIN_PB2
 
 // ---------- Settings ----------
 const uint32_t MIN_MS        = 10;     // pulse length at pot fully CCW
@@ -31,6 +34,7 @@ const uint32_t MAX_MS        = 5000;   // pulse length at pot fully CW
 const uint8_t  ADC_SAMPLE_MS = 2;      // pot sample interval
 const uint8_t  SMOOTH_SHIFT  = 4;      // EMA weight = 1/16 (raise to 5 or 6 for more smoothing)
 const uint8_t  REARM_LOW_MS  = 5;      // input must stay LOW this long before a new edge is accepted
+const uint32_t EOC_MS        = 200;    // EOC_OUT pulse length
 
 // ---------- State ----------
 volatile bool triggerPending = false;  // set by ISR on a valid rising edge
@@ -44,6 +48,9 @@ uint32_t potAccum     = 0;             // EMA accumulator = average << SMOOTH_SH
 uint32_t lastSampleMs = 0;
 uint32_t gateStartMs  = 0;
 uint32_t gateLengthMs = MIN_MS;
+
+bool     eocHigh      = false;         // true while EOC_OUT is HIGH
+uint32_t eocStartMs   = 0;
 
 // ---------- ISR ----------
 void onTrigger() {
@@ -71,6 +78,9 @@ uint32_t potToMs(uint16_t pot) {
 void setup() {
   pinMode(GATE_OUT, OUTPUT);
   digitalWriteFast(GATE_OUT, LOW);
+
+  pinMode(EOC_OUT, OUTPUT);
+  digitalWriteFast(EOC_OUT, LOW);
 
   pinMode(TRIG_IN, INPUT);
 
@@ -125,5 +135,15 @@ void loop() {
     digitalWriteFast(GATE_OUT, LOW);
     triggerPending = false;            // discard anything that slipped in
     gateHigh       = false;
+
+    eocStartMs = now;
+    eocHigh    = true;
+    digitalWriteFast(EOC_OUT, HIGH);
+  }
+
+  // End the EOC pulse when its time is up
+  if (eocHigh && (millis() - eocStartMs >= EOC_MS)) {
+    digitalWriteFast(EOC_OUT, LOW);
+    eocHigh = false;
   }
 }
