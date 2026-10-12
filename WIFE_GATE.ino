@@ -1,9 +1,12 @@
 /*
- * WIFE GATE  v1.0
+ * WIFE GATE  v1.1
  * MCU:   ATtiny1616
  * Core:  megaTinyCore (Spence Konde)
  *
  * Behavior:
+ *   - If PC2 (INVERT_SW) is grounded, the physical level written to
+ *     GATE_OUT is inverted (HIGH<->LOW) at every transition. No other
+ *     logic changes -- timing, modes, and EOC_OUT are all unaffected.
  *   - Rising edge on PA3 (TRIG_IN) starts one HIGH pulse on PB1 (GATE_OUT).
  *   - Pulse length is set by the pot on PA4: 0 -> 10 ms, 1023 -> 5000 ms, linear between.
  *   - At trigger time, PA5 (RANDOM_ADD) is read with analogRead(). A random
@@ -49,6 +52,7 @@
 #define ALT_MODE_SW     PIN_PB4
 #define RESET_IN        PIN_PB5
 #define TRIPLE_MODE_SW  PIN_PC3
+#define INVERT_SW       PIN_PC2
 
 // ---------- Settings ----------
 const uint32_t MIN_MS        = 10;     // pulse length at pot fully CCW
@@ -106,10 +110,19 @@ uint32_t potToMs(uint16_t pot) {
   return MIN_MS + ((uint32_t)pot * (MAX_MS - MIN_MS)) / 1023UL;
 }
 
+// Writes the logical gate level to GATE_OUT, inverting the physical pin
+// level when INVERT_SW is grounded. All other logic stays in terms of the
+// logical (non-inverted) level.
+void writeGateOut(bool high) {
+  bool invert = (digitalReadFast(INVERT_SW) == LOW);
+  digitalWriteFast(GATE_OUT, (high != invert) ? HIGH : LOW);
+}
+
 // ---------- Setup ----------
 void setup() {
   pinMode(GATE_OUT, OUTPUT);
-  digitalWriteFast(GATE_OUT, LOW);
+  pinMode(INVERT_SW, INPUT_PULLUP);
+  writeGateOut(false);
 
   pinMode(EOC_OUT, OUTPUT);
   digitalWriteFast(EOC_OUT, LOW);
@@ -152,7 +165,7 @@ void loop() {
     tripleMode     = false;
     triplePhase    = 0;
     triggerPending = false;            // discard edges seen while RESET is grounded
-    digitalWriteFast(GATE_OUT, LOW);
+    writeGateOut(false);
   }
 
   // Re-arm only after TRIG_IN has been continuously LOW for REARM_LOW_MS
@@ -190,14 +203,14 @@ void loop() {
       tripleMode  = true;
       triplePhase = 1;
       gateHigh    = true;
-      digitalWriteFast(GATE_OUT, HIGH);
+      writeGateOut(true);
     } else if (digitalReadFast(ALT_MODE_SW) == LOW) {
       // Alt mode: every edge restarts the cycle immediately, alternating
       // between a HIGH pulse and a silent (LOW) beat of the same duration.
       tripleMode = false;
       altPulseOn = !altPulseOn;
       gateHigh   = altPulseOn;
-      digitalWriteFast(GATE_OUT, altPulseOn ? HIGH : LOW);
+      writeGateOut(altPulseOn);
 
       // Alt mode also flashes EOC_OUT right when each new cycle starts,
       // in addition to the normal end-of-duration flash below.
@@ -207,7 +220,7 @@ void loop() {
     } else {
       tripleMode = false;
       gateHigh   = true;
-      digitalWriteFast(GATE_OUT, HIGH);
+      writeGateOut(true);
     }
   }
 
@@ -219,11 +232,11 @@ void loop() {
       triplePhase++;
       gateStartMs = now;
       gateHigh    = (triplePhase != 2);  // phase 1 = HIGH, phase 2 = LOW, phase 3 = HIGH
-      digitalWriteFast(GATE_OUT, gateHigh ? HIGH : LOW);
+      writeGateOut(gateHigh);
     } else {
       // Cycle complete -- fires EOC_OUT whether this was a single HIGH pulse,
       // an alt-mode silent (LOW) beat, or the last phase of a triple sequence.
-      digitalWriteFast(GATE_OUT, LOW);
+      writeGateOut(false);
       triggerPending = false;          // discard anything that slipped in
       gateHigh       = false;
       cycleActive    = false;

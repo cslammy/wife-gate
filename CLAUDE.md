@@ -21,8 +21,9 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
 | ALT_MODE_SW  | PB4 | Switch to GND, INPUT_PULLUP. LOW = alt mode      |
 | RESET        | PB5 | Switch to GND, INPUT_PULLUP. LOW = force gate low|
 | TRIPLE_MODE_SW | PC3 | Switch to GND, INPUT_PULLUP. LOW = triple mode |
+| INVERT_SW    | PC2 | Switch to GND, INPUT_PULLUP. LOW = invert GATE_OUT |
 
-## Current behavior (v1.0, pending hardware test)
+## Current behavior (v1.1, pending hardware test)
 - Rising edge on TRIG_IN starts one HIGH pulse on GATE_OUT.
 - Pulse length: linear map, pot 0 -> 10 ms, pot 1023 -> 5000 ms.
 - At trigger time, RANDOM_ADD is read with analogRead(). A random value from
@@ -66,6 +67,12 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
   floats high again -- until the next rising edge on TRIG_IN, at which point
   normal (or alt/triple mode) operation resumes. Edges on TRIG_IN that occur
   while RESET is grounded are discarded.
+- INVERT_SW normally reads HIGH (internal pull-up). While grounded, the
+  physical level written to GATE_OUT is inverted (HIGH<->LOW) at every
+  transition -- idle level, pulses, alt mode's silent beats, triple mode's
+  phases, and RESET's forced-LOW are all flipped. All other logic (timing,
+  modes, EOC_OUT) is computed exactly the same and is unaffected; only the
+  final GATE_OUT pin write is inverted.
 - Pot is smoothed with an EMA (accumulator form, `SMOOTH_SHIFT` = 4, sampled every 2 ms).
 - Debounce: an accepted edge disarms the input; it re-arms only after TRIG_IN
   has been continuously LOW for `REARM_LOW_MS` (5 ms). Fixed double-triggering
