@@ -140,6 +140,8 @@ double-triggering at short gate lengths.
 
 ```sh
 arduino-cli compile --fqbn megaTinyCore:megaavr:atxy6:chip=1616,clock=20internal .
+
+**READ MORE:** https://audiodiwhy.blogspot.com/2026/10/ai-relationships-modular-synthesis-and.html
 ```
 
 Flash with a SerialUPDI programmer connected to PA0, using the Tools menu
