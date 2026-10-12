@@ -1,5 +1,5 @@
 /*
- * WIFE GATE  v1.1
+ * WIFE GATE  v1.2
  * MCU:   ATtiny1616
  * Core:  megaTinyCore (Spence Konde)
  *
@@ -7,6 +7,11 @@
  *   - If PC2 (INVERT_SW) is grounded, the physical level written to
  *     GATE_OUT is inverted (HIGH<->LOW) at every transition. No other
  *     logic changes -- timing, modes, and EOC_OUT are all unaffected.
+ *   - PC1 (HALF_SW) and PC0 (DOUBLE_SW) scale the computed duration (the
+ *     same value used for every HIGH/LOW phase of the cycle) at trigger
+ *     time: PC1 alone halves it, PC0 alone doubles it, both together
+ *     triple it (not combined 2x0.5), neither leaves it unchanged. Does
+ *     not affect EOC_OUT's fixed 200 ms pulse.
  *   - Rising edge on PA3 (TRIG_IN) starts one HIGH pulse on PB1 (GATE_OUT).
  *   - Pulse length is set by the pot on PA4: 0 -> 10 ms, 1023 -> 5000 ms, linear between.
  *   - At trigger time, PA5 (RANDOM_ADD) is read with analogRead(). A random
@@ -53,6 +58,8 @@
 #define RESET_IN        PIN_PB5
 #define TRIPLE_MODE_SW  PIN_PC3
 #define INVERT_SW       PIN_PC2
+#define HALF_SW         PIN_PC1
+#define DOUBLE_SW       PIN_PC0
 
 // ---------- Settings ----------
 const uint32_t MIN_MS        = 10;     // pulse length at pot fully CCW
@@ -118,6 +125,17 @@ void writeGateOut(bool high) {
   digitalWriteFast(GATE_OUT, (high != invert) ? HIGH : LOW);
 }
 
+// Scales a computed duration per HALF_SW/DOUBLE_SW: half alone -> /2,
+// double alone -> x2, both together -> x3, neither -> unchanged.
+uint32_t scaleDuration(uint32_t ms) {
+  bool half   = (digitalReadFast(HALF_SW)   == LOW);
+  bool double_ = (digitalReadFast(DOUBLE_SW) == LOW);
+  if (half && double_) return ms * 3;
+  if (double_)          return ms * 2;
+  if (half)             return ms / 2;
+  return ms;
+}
+
 // ---------- Setup ----------
 void setup() {
   pinMode(GATE_OUT, OUTPUT);
@@ -131,6 +149,8 @@ void setup() {
   pinMode(ALT_MODE_SW, INPUT_PULLUP);
   pinMode(RESET_IN, INPUT_PULLUP);
   pinMode(TRIPLE_MODE_SW, INPUT_PULLUP);
+  pinMode(HALF_SW, INPUT_PULLUP);
+  pinMode(DOUBLE_SW, INPUT_PULLUP);
 
   // Seed the average with a real reading so the first pulse is correct
   potAccum = (uint32_t)analogRead(LENGTH_POT) << SMOOTH_SHIFT;
@@ -194,6 +214,7 @@ void loop() {
     uint16_t randomAdd    = random(0, (long)randomAddRaw + 1); // 0..randomAddRaw
 
     gateLengthMs = potToMs(smoothedPot()) + (uint32_t)randomAdd * 2;
+    gateLengthMs = scaleDuration(gateLengthMs);
     gateStartMs  = now;
     cycleActive  = true;
 

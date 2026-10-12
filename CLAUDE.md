@@ -22,8 +22,10 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
 | RESET        | PB5 | Switch to GND, INPUT_PULLUP. LOW = force gate low|
 | TRIPLE_MODE_SW | PC3 | Switch to GND, INPUT_PULLUP. LOW = triple mode |
 | INVERT_SW    | PC2 | Switch to GND, INPUT_PULLUP. LOW = invert GATE_OUT |
+| HALF_SW      | PC1 | Switch to GND, INPUT_PULLUP. LOW = halve duration |
+| DOUBLE_SW    | PC0 | Switch to GND, INPUT_PULLUP. LOW = double duration |
 
-## Current behavior (v1.1, pending hardware test)
+## Current behavior (v1.2, pending hardware test)
 - Rising edge on TRIG_IN starts one HIGH pulse on GATE_OUT.
 - Pulse length: linear map, pot 0 -> 10 ms, pot 1023 -> 5000 ms.
 - At trigger time, RANDOM_ADD is read with analogRead(). A random value from
@@ -73,6 +75,13 @@ Eurorack trigger-to-gate module firmware. Single Arduino sketch: `WIFE_GATE.ino`
   phases, and RESET's forced-LOW are all flipped. All other logic (timing,
   modes, EOC_OUT) is computed exactly the same and is unaffected; only the
   final GATE_OUT pin write is inverted.
+- HALF_SW and DOUBLE_SW normally read HIGH (internal pull-up). At the moment
+  a trigger is accepted, the computed duration (pot + random*2, before any
+  mode-specific use) is scaled: HALF_SW alone halves it, DOUBLE_SW alone
+  doubles it, both grounded together triples it (not a combined 2x0.5), and
+  neither leaves it unchanged. The scaled value is what gets reused for
+  every phase of the cycle (a single pulse, alt mode's HIGH/LOW beat, or
+  triple mode's three phases). EOC_OUT's fixed 200 ms pulse is not scaled.
 - Pot is smoothed with an EMA (accumulator form, `SMOOTH_SHIFT` = 4, sampled every 2 ms).
 - Debounce: an accepted edge disarms the input; it re-arms only after TRIG_IN
   has been continuously LOW for `REARM_LOW_MS` (5 ms). Fixed double-triggering
