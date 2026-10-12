@@ -1,5 +1,5 @@
 /*
- * WIFE GATE  v0.6
+ * WIFE GATE  v1.0
  * MCU:   ATtiny1616
  * Core:  megaTinyCore (Spence Konde)
  *
@@ -12,14 +12,27 @@
  *   - When a cycle's timer finishes, PB2 (EOC_OUT) fires a fixed 200 ms
  *     HIGH pulse ("end of cycle"). This always fires at the end of every
  *     cycle, including alt mode's silent (LOW) beats -- not just HIGH pulses.
- *   - Rising edges that arrive while GATE_OUT is HIGH are ignored, UNLESS
- *     PB4 (ALT_MODE_SW) is grounded (alt mode). In alt mode, every rising
- *     edge immediately restarts a new cycle (same duration math), and
- *     GATE_OUT alternates: odd edges produce a normal HIGH pulse, even
- *     edges stay LOW for that same duration (a skipped/silent beat).
+ *   - Rising edges that arrive while a cycle is in progress are ignored,
+ *     UNLESS PB4 (ALT_MODE_SW) is grounded (alt mode). In alt mode, every
+ *     rising edge immediately restarts a new cycle (same duration math),
+ *     and GATE_OUT alternates: odd edges produce a normal HIGH pulse, even
+ *     edges stay LOW for that same duration (a skipped/silent beat). In alt
+ *     mode, EOC_OUT also flashes immediately when each new cycle starts, in
+ *     addition to its normal flash when the duration runs its course.
+ *   - If PC3 (TRIPLE_MODE_SW) is grounded at trigger time, the duration is
+ *     computed once as usual and the cycle runs three phases back to back,
+ *     each for that same duration: HIGH, then LOW, then HIGH. EOC_OUT only
+ *     fires once, after all three phases finish. Takes priority over alt
+ *     mode if both switches are grounded at once.
+ *   - PB5 (RESET) grounded forces GATE_OUT LOW immediately and cancels any
+ *     cycle in progress (including mid-sequence in triple mode). If a cycle
+ *     was actually running, EOC_OUT still fires its 200 ms pulse (the cycle
+ *     ended, just early). GATE_OUT stays LOW -- even after RESET floats
+ *     high again -- until the next rising edge on TRIG_IN, which resumes
+ *     normal operation.
  *   - Debounce: after an accepted edge, TRIG_IN must stay LOW for
  *     REARM_LOW_MS before another rising edge is accepted (applies in
- *     both modes).
+ *     all modes).
  *   - Pot reading is smoothed with an exponential moving average.
  *   - Pulse length is latched when the pulse starts, so turning the pot
  *     mid-pulse does not change the pulse already in progress.
@@ -28,12 +41,14 @@
  */
 
 // ---------- Pins ----------
-#define GATE_OUT     PIN_PB1
-#define TRIG_IN      PIN_PA3
-#define LENGTH_POT   PIN_PA4
-#define RANDOM_ADD   PIN_PA5
-#define EOC_OUT      PIN_PB2
-#define ALT_MODE_SW  PIN_PB4
+#define GATE_OUT        PIN_PB1
+#define TRIG_IN         PIN_PA3
+#define LENGTH_POT      PIN_PA4
+#define RANDOM_ADD      PIN_PA5
+#define EOC_OUT         PIN_PB2
+#define ALT_MODE_SW     PIN_PB4
+#define RESET_IN        PIN_PB5
+#define TRIPLE_MODE_SW  PIN_PC3
 
 // ---------- Settings ----------
 const uint32_t MIN_MS        = 10;     // pulse length at pot fully CCW
@@ -60,13 +75,18 @@ bool     eocHigh      = false;         // true while EOC_OUT is HIGH
 uint32_t eocStartMs   = 0;
 
 bool     altPulseOn   = false;         // alternates each edge while in alt mode
-bool     cycleActive  = false;         // true while a cycle's timer is running (HIGH pulse or silent beat)
+bool     cycleActive  = false;         // true while a cycle's timer is running (any phase)
+
+bool     resetLatched = false;         // true from RESET going LOW until the next accepted edge after it releases
+
+bool     tripleMode   = false;         // true while executing a PC3 triple-phase (HIGH/LOW/HIGH) cycle
+uint8_t  triplePhase  = 0;             // 1, 2, or 3 -- which phase of the triple sequence is active
 
 // ---------- ISR ----------
 void onTrigger() {
   bool altMode = (digitalReadFast(ALT_MODE_SW) == LOW);
-  // ignore bounce always; ignore edges while the gate is HIGH unless alt mode is active
-  if (armed && (altMode || !gateHigh)) {
+  // ignore bounce always; ignore edges while a cycle is in progress unless alt mode is active
+  if (armed && (altMode || !cycleActive)) {
     armed          = false;
     triggerPending = true;
   }
@@ -96,6 +116,8 @@ void setup() {
 
   pinMode(TRIG_IN, INPUT);
   pinMode(ALT_MODE_SW, INPUT_PULLUP);
+  pinMode(RESET_IN, INPUT_PULLUP);
+  pinMode(TRIPLE_MODE_SW, INPUT_PULLUP);
 
   // Seed the average with a real reading so the first pulse is correct
   potAccum = (uint32_t)analogRead(LENGTH_POT) << SMOOTH_SHIFT;
@@ -115,6 +137,24 @@ void loop() {
     samplePot();
   }
 
+  // RESET: force GATE_OUT LOW and cancel any cycle in progress while grounded.
+  // Stays latched (GATE_OUT held LOW) after RESET releases until the next
+  // accepted trigger edge, handled below.
+  if (digitalReadFast(RESET_IN) == LOW) {
+    if (cycleActive) {                 // a cycle was cut short -- it still ended, so fire EOC
+      eocStartMs = now;
+      eocHigh    = true;
+      digitalWriteFast(EOC_OUT, HIGH);
+    }
+    resetLatched   = true;
+    gateHigh       = false;
+    cycleActive    = false;
+    tripleMode     = false;
+    triplePhase    = 0;
+    triggerPending = false;            // discard edges seen while RESET is grounded
+    digitalWriteFast(GATE_OUT, LOW);
+  }
+
   // Re-arm only after TRIG_IN has been continuously LOW for REARM_LOW_MS
   if (!armed) {
     if (digitalReadFast(TRIG_IN) == LOW) {
@@ -130,9 +170,12 @@ void loop() {
     }
   }
 
-  // Start a pulse on a pending trigger
+  // Start a pulse on a pending trigger. Edges seen while RESET is grounded
+  // are discarded above, so any triggerPending here is a genuine edge --
+  // either normal operation, or the first edge after RESET released.
   if (triggerPending) {
     triggerPending = false;
+    resetLatched   = false;
 
     uint16_t randomAddRaw = analogRead(RANDOM_ADD);          // 0..1023
     uint16_t randomAdd    = random(0, (long)randomAddRaw + 1); // 0..randomAddRaw
@@ -141,29 +184,56 @@ void loop() {
     gateStartMs  = now;
     cycleActive  = true;
 
-    if (digitalReadFast(ALT_MODE_SW) == LOW) {
+    if (digitalReadFast(TRIPLE_MODE_SW) == LOW) {
+      // Triple mode: one cycle, three back-to-back phases of the same
+      // duration -- HIGH, then LOW, then HIGH. EOC_OUT waits for all three.
+      tripleMode  = true;
+      triplePhase = 1;
+      gateHigh    = true;
+      digitalWriteFast(GATE_OUT, HIGH);
+    } else if (digitalReadFast(ALT_MODE_SW) == LOW) {
       // Alt mode: every edge restarts the cycle immediately, alternating
       // between a HIGH pulse and a silent (LOW) beat of the same duration.
+      tripleMode = false;
       altPulseOn = !altPulseOn;
       gateHigh   = altPulseOn;
       digitalWriteFast(GATE_OUT, altPulseOn ? HIGH : LOW);
+
+      // Alt mode also flashes EOC_OUT right when each new cycle starts,
+      // in addition to the normal end-of-duration flash below.
+      eocStartMs = now;
+      eocHigh    = true;
+      digitalWriteFast(EOC_OUT, HIGH);
     } else {
-      gateHigh = true;
+      tripleMode = false;
+      gateHigh   = true;
       digitalWriteFast(GATE_OUT, HIGH);
     }
   }
 
-  // End the cycle when its time is up -- always fires EOC_OUT, whether this
-  // cycle drove GATE_OUT HIGH or (alt mode's silent beats) left it LOW.
+  // End the current phase when its time is up.
   if (cycleActive && (millis() - gateStartMs >= gateLengthMs)) {
-    digitalWriteFast(GATE_OUT, LOW);
-    triggerPending = false;            // discard anything that slipped in
-    gateHigh       = false;
-    cycleActive    = false;
+    if (tripleMode && triplePhase < 3) {
+      // Advance to the next phase of the triple sequence (HIGH -> LOW -> HIGH),
+      // reusing the same duration. No EOC_OUT yet -- the cycle isn't done.
+      triplePhase++;
+      gateStartMs = now;
+      gateHigh    = (triplePhase != 2);  // phase 1 = HIGH, phase 2 = LOW, phase 3 = HIGH
+      digitalWriteFast(GATE_OUT, gateHigh ? HIGH : LOW);
+    } else {
+      // Cycle complete -- fires EOC_OUT whether this was a single HIGH pulse,
+      // an alt-mode silent (LOW) beat, or the last phase of a triple sequence.
+      digitalWriteFast(GATE_OUT, LOW);
+      triggerPending = false;          // discard anything that slipped in
+      gateHigh       = false;
+      cycleActive    = false;
+      tripleMode     = false;
+      triplePhase    = 0;
 
-    eocStartMs = now;
-    eocHigh    = true;
-    digitalWriteFast(EOC_OUT, HIGH);
+      eocStartMs = now;
+      eocHigh    = true;
+      digitalWriteFast(EOC_OUT, HIGH);
+    }
   }
 
   // End the EOC pulse when its time is up
